@@ -70,6 +70,71 @@ yarn install
 yarn start   # http://localhost:8080
 ```
 
+## 🏗️ Architecture Overview
+
+### System Architecture
+```
+┌─────────────────┐    HTTP/WS    ┌─────────────────┐    SQL    ┌─────────────────┐
+│   Frontend      │◄─────────────►│   Backend       │◄─────────►│   PostgreSQL    │
+│   (React)       │               │   (NestJS)      │           │   Database      │
+│                 │               │                 │           │                 │
+│ • Auth Pages    │               │ • Auth Module   │           │ • users         │
+│ • Chat UI       │               │ • Users Module  │           │ • conversations │
+│ • P2P File UI   │               │ • Chat Module   │           │ • messages      │
+│ • WebRTC Client │               │ • Signal Module │           │ • blogs         │
+└─────────────────┘               └─────────────────┘           └─────────────────┘
+         │                                  │
+         │ WebRTC P2P                       │
+         ▼                                  ▼
+┌─────────────────┐               ┌─────────────────┐
+│   Peer Client   │               │   Socket.IO     │
+│   (Browser)     │               │   Gateway       │
+│                 │               │                 │
+│ • DataChannel   │               │ • Chat Events   │
+│ • File Transfer │               │ • P2P Signaling │
+└─────────────────┘               └─────────────────┘
+```
+
+### Stack Components
+- **Frontend**: React + TypeScript + Vite + Shadcn UI
+- **Backend**: NestJS + TypeORM (Postgres) + JWT Auth
+- **Database**: PostgreSQL (Docker)
+- **Real-time**: Socket.IO (chat) + WebRTC (P2P file sharing)
+- **Auth**: JWT tokens stored in localStorage
+
+### Key Modules
+- **Auth Module**: Login/signup with JWT strategy and guards
+- **Users Module**: CRUD operations and user search
+- **Chat Module**: Conversation/Message entities with Socket.IO gateway
+- **Signal Module**: WebRTC signaling server for P2P file sharing
+- **Blogs Module**: Sample CRUD functionality
+
+### Database Schema
+```
+┌─────────────┐    ┌─────────────────────┐    ┌─────────────┐
+│    users    │    │conversation_participants│    │conversations│
+│             │    │                     │    │             │
+│ • id (PK)   │◄───┤ • conversation_id   │───►│ • id (PK)   │
+│ • name      │    │ • user_id           │    │ • created_at│
+│ • email     │    │ • PRIMARY KEY       │    └─────────────┘
+│ • password  │    └─────────────────────┘            │
+│ • created_at│                                      │
+└─────────────┘                                      │
+       │                                              │
+       │                                              │
+┌─────────────┐    ┌─────────────┐                   │
+│   messages  │    │    blogs    │                   │
+│             │    │             │                   │
+│ • id (PK)   │    │ • id (PK)   │                   │
+│ • conversation_id│◄───┤ • title     │                   │
+│ • sender_id │    │ • content   │                   │
+│ • content   │    │ • author_id │                   │
+│ • created_at│    │ • created_at│                   │
+└─────────────┘    └─────────────┘                   │
+       │                                              │
+       └──────────────────────────────────────────────┘
+```
+
 ## 📁 P2P File Sharing
 
 The app includes a minimal peer-to-peer file sharing feature using WebRTC:
@@ -93,6 +158,71 @@ The app includes a minimal peer-to-peer file sharing feature using WebRTC:
   - In-memory rooms (no persistence)
   - Minimal UI inspired by Snapdrop
 
+### P2P Architecture Flow
+```
+┌─────────────┐                    ┌─────────────┐                    ┌─────────────┐
+│   Client A  │                    │   Server    │                    │   Client B  │
+│  (Initiator)│                    │ (Signaling) │                    │  (Receiver) │
+└─────────────┘                    └─────────────┘                    └─────────────┘
+       │                                   │                                   │
+       │ 1. POST /api/rooms                │                                   │
+       │──────────────────────────────────►│                                   │
+       │◄──────────────────────────────────│ {roomId: "abc123"}                │
+       │                                   │                                   │
+       │ 2. join-room {roomId, userId, name}│                                   │
+       │──────────────────────────────────►│                                   │
+       │◄──────────────────────────────────│ {peers: []}                       │
+       │                                   │                                   │
+       │                                   │ 3. join-room {roomId, userId, name}│
+       │                                   │◄──────────────────────────────────│
+       │                                   │──────────────────────────────────►│
+       │                                   │ {peers: [{id: "A", name: "Alice"}]}│
+       │                                   │                                   │
+       │ 4. peer-joined {id: "B", name: "Bob"}│                                   │
+       │◄──────────────────────────────────│                                   │
+       │                                   │                                   │
+       │ 5. Create RTCPeerConnection       │                                   │
+       │    + DataChannel                  │                                   │
+       │                                   │                                   │
+       │ 6. signal {targetId: "B", payload: offer}│                                   │
+       │──────────────────────────────────►│                                   │
+       │                                   │ 7. signal {from: "A", payload: offer}│
+       │                                   │──────────────────────────────────►│
+       │                                   │                                   │
+       │                                   │ 8. Create RTCPeerConnection       │
+       │                                   │    + ondatachannel                │
+       │                                   │                                   │
+       │                                   │ 9. signal {targetId: "A", payload: answer}│
+       │                                   │──────────────────────────────────►│
+       │ 10. signal {from: "B", payload: answer}│                                   │
+       │◄──────────────────────────────────│                                   │
+       │                                   │                                   │
+       │ 11. ICE candidates exchange       │                                   │
+       │    (via signal events)            │                                   │
+       │                                   │                                   │
+       │ 12. DataChannel opens             │                                   │
+       │                                   │                                   │
+       │ 13. Send file chunks              │                                   │
+       │    via DataChannel                │                                   │
+       │                                   │                                   │
+       │ 14. File received & download link │                                   │
+       │    generated                      │                                   │
+       │                                   │                                   │
+```
+
+**Flow Steps:**
+1. **Room Creation**: Client calls `POST /api/rooms` → returns room ID
+2. **Peer Discovery**: Client joins WebSocket room → receives peer list
+3. **Connection Setup**: 
+   - Initiator creates RTCPeerConnection + DataChannel
+   - Sends SDP offer via WebSocket to target peer
+   - Target responds with SDP answer
+   - ICE candidates exchanged for NAT traversal
+4. **File Transfer**: 
+   - Files chunked and sent via DataChannel
+   - Receiver reassembles chunks into downloadable blob
+   - No server storage - direct P2P transfer
+
 ## 🔧 Useful commands
 
 ```bash
@@ -107,4 +237,65 @@ curl -s http://localhost:8080/api | jq .
 
 # Test P2P signaling
 curl -X POST http://localhost:8080/api/rooms
+
+# Test chat API (requires auth)
+curl -X POST http://localhost:8080/api/auth/signup \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"Test","email":"test@example.com","password":"pass"}'
 ```
+
+## 📚 API Endpoints
+
+### Request Flow Diagram
+```
+┌─────────────┐    REST API    ┌─────────────┐    WebSocket    ┌─────────────┐
+│   Frontend  │◄─────────────►│   Backend   │◄───────────────►│   Clients   │
+│   (React)   │               │  (NestJS)   │                 │  (Browser)  │
+└─────────────┘               └─────────────┘                 └─────────────┘
+       │                              │                              │
+       │ Auth Endpoints               │                              │
+       │ • POST /auth/signup          │                              │
+       │ • POST /auth/login           │                              │
+       │                              │                              │
+       │ CRUD Endpoints               │                              │
+       │ • GET /users                 │                              │
+       │ • GET /conversations         │                              │
+       │ • GET /conversations/:id/msgs│                              │
+       │                              │                              │
+       │ P2P Endpoints                │                              │
+       │ • POST /rooms                │                              │
+       │ • GET /rooms/:id             │                              │
+       │                              │                              │
+       │                              │ Chat Events                   │
+       │                              │ • conversation.join           │
+       │                              │ • message.send               │
+       │                              │ • message.receive            │
+       │                              │                              │
+       │                              │ P2P Events                    │
+       │                              │ • join-room                   │
+       │                              │ • signal                      │
+       │                              │ • peer-joined                 │
+       │                              │ • peer-left                   │
+```
+
+### Auth (Public)
+- `POST /api/auth/signup` - Create account
+- `POST /api/auth/login` - Login with JWT
+
+### Users (JWT Required)
+- `GET /api/users` - List users
+- `GET /api/users?query=<search>` - Search users
+
+### Chat (JWT Required)
+- `GET /api/conversations` - List user's conversations
+- `GET /api/conversations/:id/messages` - Get messages
+- `POST /api/conversations/direct/:userId` - Create direct chat
+
+### P2P Signaling (Public)
+- `POST /api/rooms` - Create room
+- `GET /api/rooms/:id` - Get room info
+- WebSocket `/signal` - SDP/ICE exchange
+
+### WebSocket Events
+- **Chat**: `conversation.join`, `message.send`, `message.receive`
+- **P2P**: `join-room`, `signal`, `peer-joined`, `peer-left`
